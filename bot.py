@@ -14,50 +14,56 @@ TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '7497063079')
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 app = Flask(__name__)
 
-# --- SİNYAL HAFIZASI (Aynı mumda tekrar bildirim atmaması için) ---
-son_sinyal_mumu = None
+# --- PARİTE LİSTESİ VE HAFIZA ---
+# Takip etmek istediğimiz ürünler (XAUT eklendi)
+PARITELER = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "XAUTUSDT"]
 
-# --- 1. MANUEL ANALİZ KOMUTU (/analiz) ---
+# Her paritenin kendi son sinyal mumunu tutmak için sözlük (hafıza)
+son_sinyal_mumleri = {}
+
+# --- 1. ÇOKLU MANUEL ANALİZ KOMUTU (/analiz) ---
 @bot.message_handler(commands=['analiz'])
-def btc_analiz_gonder(message):
-    bot.reply_to(message, "⏳ Veriler çekiliyor ve analiz ediliyor...")
+def coklu_analiz_gonder(message):
+    bot.reply_to(message, "⏳ 5 ürün için veriler çekiliyor ve analiz ediliyor...")
     try:
-        url = "https://data-api.binance.vision/api/v3/ticker/24hr?symbol=BTCUSDT"
-        cevap = requests.get(url).json()
+        toplam_mesaj = "📊 *5'Lİ PİYASA HIZLI ANALİZ* 📊\n\n"
         
-        son_fiyat = float(cevap['lastPrice'])
-        en_yuksek = float(cevap['highPrice'])
-        en_dusuk = float(cevap['lowPrice'])
-        
-        pivot = (en_yuksek + en_dusuk + son_fiyat) / 3
-        direnc_1 = (pivot * 2) - en_dusuk
-        destek_1 = (pivot * 2) - en_yuksek
-        
-        # Stop-Loss hesaplaması (Mevcut desteğin %2 altı olarak ayarlandı)
-        stop_loss = destek_1 * 0.98
-        
-        analiz_mesaji = (
-            f"📊 *BTC/USDT HIZLI ANALİZ* 📊\n\n"
-            f"💵 *Anlık Fiyat:* {son_fiyat:,.2f} $\n"
-            f"📈 *24s Yüksek:* {en_yuksek:,.2f} $\n"
-            f"📉 *24s Düşük:* {en_dusuk:,.2f} $\n\n"
-            f"🧱 *Direnç:* {direnc_1:,.2f} $\n"
-            f"🛡️ *Destek:* {destek_1:,.2f} $\n"
-            f"🛑 *Stop-Loss:* {stop_loss:,.2f} $"
-        )
-        bot.reply_to(message, analiz_mesaji, parse_mode='Markdown')
+        for sembol in PARITELER:
+            url = f"https://data-api.binance.vision/api/v3/ticker/24hr?symbol={sembol}"
+            cevap = requests.get(url).json()
+            
+            # Sembol adını daha şık gösterelim (örn: BTCUSDT -> BTC/USDT)
+            coin_adi = sembol.replace("USDT", "/USDT")
+            
+            son_fiyat = float(cevap['lastPrice'])
+            en_yuksek = float(cevap['highPrice'])
+            en_dusuk = float(cevap['lowPrice'])
+            
+            pivot = (en_yuksek + en_dusuk + son_fiyat) / 3
+            direnc_1 = (pivot * 2) - en_dusuk
+            destek_1 = (pivot * 2) - en_yuksek
+            stop_loss = destek_1 * 0.98
+            
+            toplam_mesaj += (
+                f"🔹 *{coin_adi}*\n"
+                f"💵 Fiyat: {son_fiyat:,.2f} $\n"
+                f"🧱 Direnç: {direnc_1:,.2f} $ | 🛡️ Destek: {destek_1:,.2f} $\n"
+                f"🛑 Stop-Loss: {stop_loss:,.2f} $\n"
+                f"-----------------------------------\n"
+            )
+            
+        bot.reply_to(message, toplam_mesaj, parse_mode='Markdown')
     except Exception as e:
         bot.reply_to(message, f"⚠️ Veri çekilemedi. Hata: {e}")
 
 
-# --- 2. KENDİ WAVETREND (WT) MOTORUMUZ ---
-def binance_veri_cek(symbol="BTCUSDT", interval="4h", limit=1000):
-    """Binance üzerinden son mum verilerini çeker (Limit 1000 yapılarak TradingView ile eşitlendi)"""
+# --- 2. KENDİ WAVETREND (WT) MOTORUMUZ (ÇOKLU) ---
+def binance_veri_cek(symbol, interval="4h", limit=1000):
+    """Binance üzerinden seçilen paritenin mum verilerini çeker"""
     url = f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     res = requests.get(url)
     data = res.json()
     
-    # Verileri bir tabloya (DataFrame) dönüştürüyoruz
     df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
     df['high'] = df['high'].astype(float)
     df['low'] = df['low'].astype(float)
@@ -75,48 +81,48 @@ def wt_hesapla(df, n1=10, n2=21):
     return wt1, wt2
 
 def piyasayi_tara():
-    global son_sinyal_mumu
-    """Belirli aralıklarla çalışıp kesişme olup olmadığını kontrol eder"""
-    try:
-        df = binance_veri_cek("BTCUSDT", "4h", 1000)
-        wt1, wt2 = wt_hesapla(df)
-        
-        # Son kapanan mum (-2) ve bir önceki mumu (-3) kontrol ediyoruz
-        onceki_wt1, onceki_wt2 = wt1.iloc[-3], wt2.iloc[-3]
-        guncel_wt1, guncel_wt2 = wt1.iloc[-2], wt2.iloc[-2]
-        kapanis_fiyati = df['close'].iloc[-2]
-        mum_zamani = df['timestamp'].iloc[-2] # Sinyalin saat kimliği
-        
-        # Eğer bu 4 saatlik mumda zaten sinyal gönderdiysek tekrar etme
-        if mum_zamani == son_sinyal_mumu:
-            return
-        
-        # YUKARI KESİŞME (AL SİNYALİ) - Sadece -14'ün altındaysa
-        if onceki_wt1 <= onceki_wt2 and guncel_wt1 > guncel_wt2 and guncel_wt1 < -14:
-            mesaj = (f"🟢 *WT AL SİNYALİ (4s)* 🟢\n\n"
-                     f"🔹 *Parite:* BTC/USDT\n"
-                     f"💵 *Kapanış Fiyatı:* {kapanis_fiyati:,.2f} $\n"
-                     f"📊 *WT Seviyesi:* {guncel_wt1:.2f}\n"
-                     f"🎯 *Kriter:* -14 Altında Kesişim Yakalandı")
-            bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=mesaj, parse_mode='Markdown')
-            son_sinyal_mumu = mum_zamani # Sinyali hafızaya al
+    """Tüm pariteleri tek tek tarayıp kesişme olup olmadığını kontrol eder"""
+    for sembol in PARITELER:
+        try:
+            df = binance_veri_cek(sembol, "4h", 1000)
+            wt1, wt2 = wt_hesapla(df)
             
-        # AŞAĞI KESİŞME (SAT SİNYALİ) - Sadece -14'ün üzerindeyse
-        elif onceki_wt1 >= onceki_wt2 and guncel_wt1 < guncel_wt2 and guncel_wt1 > -14:
-            mesaj = (f"🔴 *WT SAT SİNYALİ (4s)* 🔴\n\n"
-                     f"🔹 *Parite:* BTC/USDT\n"
-                     f"💵 *Kapanış Fiyatı:* {kapanis_fiyati:,.2f} $\n"
-                     f"📊 *WT Seviyesi:* {guncel_wt1:.2f}\n"
-                     f"🎯 *Kriter:* -14 Üzerinde Kesişim Yakalandı")
-            bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=mesaj, parse_mode='Markdown')
-            son_sinyal_mumu = mum_zamani # Sinyali hafızaya al
+            onceki_wt1, onceki_wt2 = wt1.iloc[-3], wt2.iloc[-3]
+            guncel_wt1, guncel_wt2 = wt1.iloc[-2], wt2.iloc[-2]
+            kapanis_fiyati = df['close'].iloc[-2]
+            mum_zamani = df['timestamp'].iloc[-2]
             
-    except Exception as e:
-        print(f"Tarama sırasında hata oluştu: {e}")
+            coin_adi = sembol.replace("USDT", "/USDT")
+            
+            # Bu parite için bu mumda zaten sinyal atıldı mı?
+            if son_sinyal_mumleri.get(sembol) == mum_zamani:
+                continue
+            
+            # YUKARI KESİŞME (AL SİNYALİ) - Sadece -14'ün altındaysa
+            if onceki_wt1 <= onceki_wt2 and guncel_wt1 > guncel_wt2 and guncel_wt1 < -14:
+                mesaj = (f"🟢 *WT AL SİNYALİ (4s)* 🟢\n\n"
+                         f"🔹 *Parite:* {coin_adi}\n"
+                         f"💵 *Kapanış Fiyatı:* {kapanis_fiyati:,.2f} $\n"
+                         f"📊 *WT Seviyesi:* {guncel_wt1:.2f}\n"
+                         f"🎯 *Kriter:* -14 Altında Kesişim Yakalandı")
+                bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=mesaj, parse_mode='Markdown')
+                son_sinyal_mumleri[sembol] = mum_zamani
+                
+            # AŞAĞI KESİŞME (SAT SİNYALİ) - Sadece -14'ün üzerindeyse
+            elif onceki_wt1 >= onceki_wt2 and guncel_wt1 < guncel_wt2 and guncel_wt1 > -14:
+                mesaj = (f"🔴 *WT SAT SİNYALİ (4s)* 🔴\n\n"
+                         f"🔹 *Parite:* {coin_adi}\n"
+                         f"💵 *Kapanış Fiyatı:* {kapanis_fiyati:,.2f} $\n"
+                         f"📊 *WT Seviyesi:* {guncel_wt1:.2f}\n"
+                         f"🎯 *Kriter:* -14 Üzerinde Kesişim Yakalandı")
+                bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=mesaj, parse_mode='Markdown')
+                son_sinyal_mumleri[sembol] = mum_zamani
+                
+        except Exception as e:
+            print(f"{sembol} taranırken hata oluştu: {e}")
 
 # Arka planda zamanlayıcıyı çalıştıran döngü
 def zamanlayici_baslat():
-    # Piyasayı her 15 dakikada bir taramasını söylüyoruz (isteğe göre değiştirilebilir)
     schedule.every(15).minutes.do(piyasayi_tara)
     while True:
         schedule.run_pending()
@@ -129,16 +135,14 @@ def telegram_dinle():
 # Render'ın zorunlu kıldığı Web Sunucusu (Dummy Server)
 @app.route('/')
 def ana_sayfa():
-    return "Bot Aktif ve Kendi Analizini Yapıyor!"
+    return "5'li Parite Botu Aktif ve Çalışıyor!"
 
 
 if __name__ == '__main__':
-    # Telegram ve Zamanlayıcıyı aynı anda arka planda başlatıyoruz
     threading.Thread(target=telegram_dinle, daemon=True).start()
     threading.Thread(target=zamanlayici_baslat, daemon=True).start()
     
-    print("Profesyonel Analiz Motoru Başlatıldı!")
+    print("5'li Parite Analiz Motoru Başlatıldı!")
     
-    # Render'ın port ataması
     port = int(os.environ.get("PORT", 5000))
     app.run(port=port, host='0.0.0.0')
