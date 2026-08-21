@@ -19,7 +19,6 @@ app = Flask(__name__)
 def btc_analiz_gonder(message):
     bot.reply_to(message, "⏳ Veriler çekiliyor ve analiz ediliyor...")
     try:
-        # Bulut sunucularda (ABD IP'si) sorun yaşamamak için data-api kullanıyoruz
         url = "https://data-api.binance.vision/api/v3/ticker/24hr?symbol=BTCUSDT"
         cevap = requests.get(url).json()
         
@@ -31,13 +30,17 @@ def btc_analiz_gonder(message):
         direnc_1 = (pivot * 2) - en_dusuk
         destek_1 = (pivot * 2) - en_yuksek
         
+        # Stop-Loss hesaplaması (Mevcut desteğin %2 altı olarak ayarlandı)
+        stop_loss = destek_1 * 0.98
+        
         analiz_mesaji = (
             f"📊 *BTC/USDT HIZLI ANALİZ* 📊\n\n"
             f"💵 *Anlık Fiyat:* {son_fiyat:,.2f} $\n"
             f"📈 *24s Yüksek:* {en_yuksek:,.2f} $\n"
             f"📉 *24s Düşük:* {en_dusuk:,.2f} $\n\n"
             f"🧱 *Direnç:* {direnc_1:,.2f} $\n"
-            f"🛡️ *Destek:* {destek_1:,.2f} $"
+            f"🛡️ *Destek:* {destek_1:,.2f} $\n"
+            f"🛑 *Stop-Loss:* {stop_loss:,.2f} $"
         )
         bot.reply_to(message, analiz_mesaji, parse_mode='Markdown')
     except Exception as e:
