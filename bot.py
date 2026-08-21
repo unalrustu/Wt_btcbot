@@ -16,7 +16,7 @@ app = Flask(__name__)
 def btc_analiz_gonder(message):
     bot.reply_to(message, "⏳ Veriler çekiliyor ve analiz ediliyor...")
     try:
-        url = "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"
+        url = "https://data-api.binance.vision/api/v3/ticker/24hr?symbol=BTCUSDT"
         cevap = requests.get(url).json()
         
         son_fiyat = float(cevap['lastPrice'])
@@ -40,6 +40,7 @@ def btc_analiz_gonder(message):
         )
         bot.reply_to(message, analiz_mesaji, parse_mode='Markdown')
     except Exception as e:
+        print(f"Hata detayı: {e}")
         bot.reply_to(message, "⚠️ Veri çekilemedi. Lütfen tekrar deneyin.")
 
 # --- 2. TRADINGVIEW WEBHOOK DİNLEYİCİSİ ---
