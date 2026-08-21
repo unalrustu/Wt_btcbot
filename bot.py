@@ -79,20 +79,22 @@ def piyasayi_tara():
         guncel_wt1, guncel_wt2 = wt1.iloc[-2], wt2.iloc[-2]
         kapanis_fiyati = df['close'].iloc[-2]
         
-        # YUKARI KESİŞME (AL SİNYALİ)
-        if onceki_wt1 <= onceki_wt2 and guncel_wt1 > guncel_wt2:
+        # YUKARI KESİŞME (AL SİNYALİ) - Sadece -14'ün altındaysa
+        if onceki_wt1 <= onceki_wt2 and guncel_wt1 > guncel_wt2 and guncel_wt1 < -14:
             mesaj = (f"🟢 *WT AL SİNYALİ (4s)* 🟢\n\n"
                      f"🔹 *Parite:* BTC/USDT\n"
                      f"💵 *Kapanış Fiyatı:* {kapanis_fiyati:,.2f} $\n"
-                     f"📊 *WT Seviyesi:* {guncel_wt1:.2f}")
+                     f"📊 *WT Seviyesi:* {guncel_wt1:.2f}\n"
+                     f"🎯 *Kriter:* -14 Altında Kesişim Yakalandı")
             bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=mesaj, parse_mode='Markdown')
             
-        # AŞAĞI KESİŞME (SAT SİNYALİ)
-        elif onceki_wt1 >= onceki_wt2 and guncel_wt1 < guncel_wt2:
+        # AŞAĞI KESİŞME (SAT SİNYALİ) - Sadece -14'ün üzerindeyse
+        elif onceki_wt1 >= onceki_wt2 and guncel_wt1 < guncel_wt2 and guncel_wt1 > -14:
             mesaj = (f"🔴 *WT SAT SİNYALİ (4s)* 🔴\n\n"
                      f"🔹 *Parite:* BTC/USDT\n"
                      f"💵 *Kapanış Fiyatı:* {kapanis_fiyati:,.2f} $\n"
-                     f"📊 *WT Seviyesi:* {guncel_wt1:.2f}")
+                     f"📊 *WT Seviyesi:* {guncel_wt1:.2f}\n"
+                     f"🎯 *Kriter:* -14 Üzerinde Kesişim Yakalandı")
             bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=mesaj, parse_mode='Markdown')
             
     except Exception as e:
