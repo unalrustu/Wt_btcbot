@@ -1,21 +1,25 @@
 import os
+import time
 import threading
 import requests
+import pandas as pd
 import telebot
-from flask import Flask, request
+import schedule
+from flask import Flask
 
 # Telegram Bot Bilgileriniz
-TELEGRAM_BOT_TOKEN = '8853302939:AAFSfbXJyJ9M6wCZ9HB0mJmp3kn_tOd6yRg'
-TELEGRAM_CHAT_ID = '7497063079'
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '8853302939:AAFSfbXJyJ9M6wCZ9HB0mJmp3kn_tOd6yRg')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '7497063079')
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 app = Flask(__name__)
 
-# --- 1. TELEGRAM KOMUT DİNLEYİCİSİ (/analiz) ---
+# --- 1. MANUEL ANALİZ KOMUTU (/analiz) ---
 @bot.message_handler(commands=['analiz'])
 def btc_analiz_gonder(message):
     bot.reply_to(message, "⏳ Veriler çekiliyor ve analiz ediliyor...")
     try:
+        # Bulut sunucularda (ABD IP'si) sorun yaşamamak için data-api kullanıyoruz
         url = "https://data-api.binance.vision/api/v3/ticker/24hr?symbol=BTCUSDT"
         cevap = requests.get(url).json()
         
@@ -23,11 +27,9 @@ def btc_analiz_gonder(message):
         en_yuksek = float(cevap['highPrice'])
         en_dusuk = float(cevap['lowPrice'])
         
-        # Pivot Hesaplaması
         pivot = (en_yuksek + en_dusuk + son_fiyat) / 3
         direnc_1 = (pivot * 2) - en_dusuk
         destek_1 = (pivot * 2) - en_yuksek
-        stop_loss = destek_1 * 0.99
         
         analiz_mesaji = (
             f"📊 *BTC/USDT HIZLI ANALİZ* 📊\n\n"
@@ -35,46 +37,92 @@ def btc_analiz_gonder(message):
             f"📈 *24s Yüksek:* {en_yuksek:,.2f} $\n"
             f"📉 *24s Düşük:* {en_dusuk:,.2f} $\n\n"
             f"🧱 *Direnç:* {direnc_1:,.2f} $\n"
-            f"🛡️ *Destek:* {destek_1:,.2f} $\n"
-            f"🛑 *Stop Loss:* {stop_loss:,.2f} $"
+            f"🛡️ *Destek:* {destek_1:,.2f} $"
         )
         bot.reply_to(message, analiz_mesaji, parse_mode='Markdown')
     except Exception as e:
-        print(f"Hata detayı: {e}")
-        bot.reply_to(message, "⚠️ Veri çekilemedi. Lütfen tekrar deneyin.")
+        bot.reply_to(message, f"⚠️ Veri çekilemedi. Hata: {e}")
 
-# --- 2. TRADINGVIEW WEBHOOK DİNLEYİCİSİ ---
-@app.route('/webhook', methods=['POST'])
-def webhook_karsila():
-    veri = request.json
-    if veri:
-        parite = veri.get('parite', 'Bilinmiyor')
-        yon = veri.get('yon', '-')
-        fiyat = veri.get('fiyat', '-')
-        wt_seviye = veri.get('wt_seviyesi', '-')
-        
-        mesaj = (f"🚨 *YENİ WT SİNYALİ* 🚨\n\n"
-                 f"🔹 *Parite:* {parite} (4s)\n"
-                 f"🧭 *Yön:* {yon}\n"
-                 f"📊 *WT Seviyesi:* {wt_seviye}\n"
-                 f"💵 *Kapanış Fiyatı:* {fiyat} $")
-        
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=mesaj, parse_mode='Markdown')
-        return "Başarılı", 200
-        
-    return "Veri alınamadı", 400
 
-# Botu arka planda sürekli çalıştıracak fonksiyon
-def telegram_bot_calistir():
+# --- 2. KENDİ WAVETREND (WT) MOTORUMUZ ---
+def binance_veri_cek(symbol="BTCUSDT", interval="4h", limit=100):
+    """Binance üzerinden son mum verilerini çeker (Varsayılan 4 Saatlik)"""
+    url = f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    res = requests.get(url)
+    data = res.json()
+    
+    # Verileri bir tabloya (DataFrame) dönüştürüyoruz
+    df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
+    df['high'] = df['high'].astype(float)
+    df['low'] = df['low'].astype(float)
+    df['close'] = df['close'].astype(float)
+    return df
+
+def wt_hesapla(df, n1=10, n2=21):
+    """WaveTrend formülünün matematiksel hesaplaması"""
+    ap = (df['high'] + df['low'] + df['close']) / 3
+    esa = ap.ewm(span=n1, adjust=False).mean()
+    d = (ap - esa).abs().ewm(span=n1, adjust=False).mean()
+    ci = (ap - esa) / (0.015 * d)
+    wt1 = ci.ewm(span=n2, adjust=False).mean()
+    wt2 = wt1.rolling(window=4).mean()
+    return wt1, wt2
+
+def piyasayi_tara():
+    """Belirli aralıklarla çalışıp kesişme olup olmadığını kontrol eder"""
+    try:
+        df = binance_veri_cek("BTCUSDT", "4h", 100)
+        wt1, wt2 = wt_hesapla(df)
+        
+        # Son kapanan mum (-2) ve bir önceki mumu (-3) kontrol ediyoruz
+        onceki_wt1, onceki_wt2 = wt1.iloc[-3], wt2.iloc[-3]
+        guncel_wt1, guncel_wt2 = wt1.iloc[-2], wt2.iloc[-2]
+        kapanis_fiyati = df['close'].iloc[-2]
+        
+        # YUKARI KESİŞME (AL SİNYALİ)
+        if onceki_wt1 <= onceki_wt2 and guncel_wt1 > guncel_wt2:
+            mesaj = (f"🟢 *WT AL SİNYALİ (4s)* 🟢\n\n"
+                     f"🔹 *Parite:* BTC/USDT\n"
+                     f"💵 *Kapanış Fiyatı:* {kapanis_fiyati:,.2f} $\n"
+                     f"📊 *WT Seviyesi:* {guncel_wt1:.2f}")
+            bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=mesaj, parse_mode='Markdown')
+            
+        # AŞAĞI KESİŞME (SAT SİNYALİ)
+        elif onceki_wt1 >= onceki_wt2 and guncel_wt1 < guncel_wt2:
+            mesaj = (f"🔴 *WT SAT SİNYALİ (4s)* 🔴\n\n"
+                     f"🔹 *Parite:* BTC/USDT\n"
+                     f"💵 *Kapanış Fiyatı:* {kapanis_fiyati:,.2f} $\n"
+                     f"📊 *WT Seviyesi:* {guncel_wt1:.2f}")
+            bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=mesaj, parse_mode='Markdown')
+            
+    except Exception as e:
+        print(f"Tarama sırasında hata oluştu: {e}")
+
+# Arka planda zamanlayıcıyı çalıştıran döngü
+def zamanlayici_baslat():
+    # Piyasayı her 15 dakikada bir taramasını söylüyoruz (isteğe göre değiştirilebilir)
+    schedule.every(15).minutes.do(piyasayi_tara)
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+# Telegram komutlarını dinleyen döngü
+def telegram_dinle():
     bot.infinity_polling()
 
+# Render'ın zorunlu kıldığı Web Sunucusu (Dummy Server)
+@app.route('/')
+def ana_sayfa():
+    return "Bot Aktif ve Kendi Analizini Yapıyor!"
+
+
 if __name__ == '__main__':
-    # Telegram botunu dinlemek için ayrı bir işlem (thread) başlatıyoruz
-    threading.Thread(target=telegram_bot_calistir, daemon=True).start()
+    # Telegram ve Zamanlayıcıyı aynı anda arka planda başlatıyoruz
+    threading.Thread(target=telegram_dinle, daemon=True).start()
+    threading.Thread(target=zamanlayici_baslat, daemon=True).start()
     
-    print("Sistem bulut uyumlu olarak aktif edildi! Sinyaller bekleniyor...")
+    print("Profesyonel Analiz Motoru Başlatıldı!")
     
-    # BULUT UYUMLU PORT AYARI
-    # Render gibi platformlar kendi portlarını atarlar, bunu otomatik algılıyoruz:
+    # Render'ın port ataması
     port = int(os.environ.get("PORT", 5000))
     app.run(port=port, host='0.0.0.0')
