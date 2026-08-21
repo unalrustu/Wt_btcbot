@@ -14,6 +14,9 @@ TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '7497063079')
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 app = Flask(__name__)
 
+# --- SİNYAL HAFIZASI (Aynı mumda tekrar bildirim atmaması için) ---
+son_sinyal_mumu = None
+
 # --- 1. MANUEL ANALİZ KOMUTU (/analiz) ---
 @bot.message_handler(commands=['analiz'])
 def btc_analiz_gonder(message):
@@ -48,8 +51,8 @@ def btc_analiz_gonder(message):
 
 
 # --- 2. KENDİ WAVETREND (WT) MOTORUMUZ ---
-def binance_veri_cek(symbol="BTCUSDT", interval="4h", limit=100):
-    """Binance üzerinden son mum verilerini çeker (Varsayılan 4 Saatlik)"""
+def binance_veri_cek(symbol="BTCUSDT", interval="4h", limit=1000):
+    """Binance üzerinden son mum verilerini çeker (Limit 1000 yapılarak TradingView ile eşitlendi)"""
     url = f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     res = requests.get(url)
     data = res.json()
@@ -72,15 +75,21 @@ def wt_hesapla(df, n1=10, n2=21):
     return wt1, wt2
 
 def piyasayi_tara():
+    global son_sinyal_mumu
     """Belirli aralıklarla çalışıp kesişme olup olmadığını kontrol eder"""
     try:
-        df = binance_veri_cek("BTCUSDT", "4h", 100)
+        df = binance_veri_cek("BTCUSDT", "4h", 1000)
         wt1, wt2 = wt_hesapla(df)
         
         # Son kapanan mum (-2) ve bir önceki mumu (-3) kontrol ediyoruz
         onceki_wt1, onceki_wt2 = wt1.iloc[-3], wt2.iloc[-3]
         guncel_wt1, guncel_wt2 = wt1.iloc[-2], wt2.iloc[-2]
         kapanis_fiyati = df['close'].iloc[-2]
+        mum_zamani = df['timestamp'].iloc[-2] # Sinyalin saat kimliği
+        
+        # Eğer bu 4 saatlik mumda zaten sinyal gönderdiysek tekrar etme
+        if mum_zamani == son_sinyal_mumu:
+            return
         
         # YUKARI KESİŞME (AL SİNYALİ) - Sadece -14'ün altındaysa
         if onceki_wt1 <= onceki_wt2 and guncel_wt1 > guncel_wt2 and guncel_wt1 < -14:
@@ -90,6 +99,7 @@ def piyasayi_tara():
                      f"📊 *WT Seviyesi:* {guncel_wt1:.2f}\n"
                      f"🎯 *Kriter:* -14 Altında Kesişim Yakalandı")
             bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=mesaj, parse_mode='Markdown')
+            son_sinyal_mumu = mum_zamani # Sinyali hafızaya al
             
         # AŞAĞI KESİŞME (SAT SİNYALİ) - Sadece -14'ün üzerindeyse
         elif onceki_wt1 >= onceki_wt2 and guncel_wt1 < guncel_wt2 and guncel_wt1 > -14:
@@ -99,6 +109,7 @@ def piyasayi_tara():
                      f"📊 *WT Seviyesi:* {guncel_wt1:.2f}\n"
                      f"🎯 *Kriter:* -14 Üzerinde Kesişim Yakalandı")
             bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=mesaj, parse_mode='Markdown')
+            son_sinyal_mumu = mum_zamani # Sinyali hafızaya al
             
     except Exception as e:
         print(f"Tarama sırasında hata oluştu: {e}")
